@@ -1,1 +1,2 @@
 # activity-watch
+# activity-watch
