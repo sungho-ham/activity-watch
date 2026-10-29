@@ -116,7 +116,7 @@ struct CoreTests {
         var settings = Settings()
         settings.automaticBucket = false
         settings.manualBucketID = "aw-watcher-afk_previous"
-        settings.webPage = WebPagePreferences(title: "Example", url: "https://example.com", windowSize: WindowSize(width: 1250, height: 820))
+        settings.webPage = WebPagePreferences(title: "Example", url: "https://example.com")
         try store.saveSettings(settings)
         var state = SavedState()
         let entry = Adjustment(span: span(0, 60), kind: .exclude)
@@ -125,7 +125,7 @@ struct CoreTests {
         try store.saveState(state)
         let restored = try FileStore(directory: root).load()
         try expect(restored.0 == settings && restored.1 == state, "relaunch round trip")
-        try expect(restored.0.webPage?.windowSize == WindowSize(width: 1250, height: 820), "saved web-page window size survives relaunch")
+        try expect(restored.0.webPage == settings.webPage, "saved web page survives relaunch")
         try expect(restored.1.entries(day: "2026-10-28", bucket: "one")[0].kind == .exclude, "per-bucket independent adjustments")
         try expect(restored.1.entries(day: "2026-10-29", bucket: "one").isEmpty, "per-date independent adjustments")
         let url = root.appendingPathComponent("settings.json")
@@ -147,7 +147,15 @@ struct CoreTests {
     }
     static func decodingTests() throws {
         let oldSettings = Data("{\"version\":1,\"automaticBucket\":true}".utf8)
-        try expect(try JSONDates.decoder().decode(Settings.self, from: oldSettings).webPage == nil, "old settings without window size remain readable")
+        try expect(try JSONDates.decoder().decode(Settings.self, from: oldSettings).webPage == nil, "old settings without a web page remain readable")
+        let browserSettings = Data("""
+        {"version":1,"automaticBucket":false,"manualBucketID":"aw-watcher-afk_previous",
+         "webPage":{"title":"Example","url":"https://example.com","windowSize":{"width":1250,"height":820}}}
+        """.utf8)
+        let restored = try JSONDates.decoder().decode(Settings.self, from: browserSettings)
+        try expect(!restored.automaticBucket && restored.manualBucketID == "aw-watcher-afk_previous"
+                   && restored.webPage == WebPagePreferences(title: "Example", url: "https://example.com"),
+                   "settings from the embedded browser preserve the saved page and bucket")
         let payload = Data("""
         [{"id":1,"timestamp":"2026-10-28T00:00:00.123456+00:00","duration":5.5,"data":{"status":"not-afk"}},
          {"id":2,"timestamp":"2026-10-28T00:00:10+00:00","duration":500000,"data":{"status":"afk"}}]

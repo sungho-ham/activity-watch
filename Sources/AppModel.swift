@@ -162,25 +162,13 @@ final class AppModel: ObservableObject {
     func saveWebPage(title: String, address: String) throws {
         var next = settings
         let profile = WebPagePreferences(title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "웹페이지" : title,
-                                         url: address.trimmingCharacters(in: .whitespacesAndNewlines), windowSize: settings.webPage?.windowSize)
+                                         url: address.trimmingCharacters(in: .whitespacesAndNewlines))
         guard profile.validatedURL != nil else { throw AppError("유효한 HTTPS 주소를 입력하세요.") }
         next.webPage = profile
         try store.saveSettings(next)
         settings = next
         editingWebPage = false
         browserAction?()
-    }
-    func rememberWebPageWindowSize(_ size: CGSize, address: String) {
-        let value = WindowSize(width: size.width.rounded(), height: size.height.rounded())
-        guard settings.webPage?.url == address else { return }
-        guard value.width.isFinite, value.height.isFinite, value.width > 0, value.height > 0,
-              settings.webPage?.windowSize != value else { return }
-        do {
-            var next = settings
-            next.webPage?.windowSize = value
-            try store.saveSettings(next)
-            settings = next
-        } catch { self.error = "웹페이지 창 크기를 저장하지 못했습니다. \(error.localizedDescription)" }
     }
     func select(_ entry: Adjustment) { selectedAdjustment = selectedAdjustment == entry.id ? nil : entry.id }
     func beginDraft(_ span: Span, kind: AdjustmentKind = .exclude) {

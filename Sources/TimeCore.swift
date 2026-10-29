@@ -63,17 +63,11 @@ struct Settings: Codable, Equatable {
 struct WebPagePreferences: Codable, Equatable {
     var title: String
     var url: String
-    var windowSize: WindowSize?
     var validatedURL: URL? {
         guard let value = URL(string: url), value.scheme?.lowercased() == "https",
               let host = value.host, !host.isEmpty, value.user == nil, value.password == nil else { return nil }
         return value
     }
-}
-
-struct WindowSize: Codable, Equatable {
-    var width: Double
-    var height: Double
 }
 
 struct SavedState: Codable, Equatable {

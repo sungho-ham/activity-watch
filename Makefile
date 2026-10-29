@@ -3,6 +3,8 @@ APP_BUNDLE := build/$(APP_NAME).app
 EXECUTABLE := awtoday-popup
 CONTENTS := $(APP_BUNDLE)/Contents
 MACOS := $(CONTENTS)/MacOS
+RESOURCES := $(CONTENTS)/Resources
+APP_ICON := build/awtoday.icns
 SOURCE := AwTodayPopup.swift $(wildcard Sources/*.swift)
 SWIFT_FLAGS := -parse-as-library -target arm64-apple-macos13.0
 .DEFAULT_GOAL := app
@@ -15,11 +17,17 @@ build/$(EXECUTABLE): $(SOURCE)
 	mkdir -p build
 	swiftc $(SWIFT_FLAGS) $(SOURCE) -o $@
 
-app: build/$(EXECUTABLE) Info.plist
+$(APP_ICON): Scripts/GenerateIcon.swift
+	mkdir -p build
+	swift Scripts/GenerateIcon.swift build/awtoday.iconset
+	iconutil --convert icns build/awtoday.iconset --output $@
+
+app: build/$(EXECUTABLE) Info.plist $(APP_ICON)
 	rm -rf "$(APP_BUNDLE)"
-	mkdir -p "$(MACOS)"
+	mkdir -p "$(MACOS)" "$(RESOURCES)"
 	cp build/$(EXECUTABLE) "$(MACOS)/$(EXECUTABLE)"
 	cp Info.plist "$(CONTENTS)/Info.plist"
+	cp "$(APP_ICON)" "$(RESOURCES)/awtoday.icns"
 	codesign --force --sign - "$(APP_BUNDLE)"
 
 test: build/core-tests

@@ -15,7 +15,6 @@ struct AwTodayMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
-    private var browser: WebPageBrowser?
     private var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,26 +40,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.setFrame(frame, display: true, animate: false)
         }
         model.closeAction = { [weak window] in window?.close() }
-        model.browserAction = { [weak self] in
-            guard let self else { return }
-            guard let profile = self.model?.settings.webPage, let url = profile.validatedURL else {
-                self.model?.editingWebPage = true
+        model.browserAction = { [weak model] in
+            guard let model else { return }
+            guard let url = model.settings.webPage?.validatedURL else {
+                model.editingWebPage = true
                 return
             }
-            if self.browser?.window?.isVisible != true || self.browser?.homeURL != url {
-                self.browser?.close()
-                self.browser = WebPageBrowser(url: url, title: profile.title,
-                    preferredContentSize: profile.windowSize.map { NSSize(width: $0.width, height: $0.height) },
-                    onResize: { [weak model] in model?.rememberWebPageWindowSize($0, address: profile.url) })
+            if !NSWorkspace.shared.open(url) {
+                model.error = "기본 웹브라우저에서 웹페이지를 열지 못했습니다."
             }
-            self.browser?.open()
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         model.refresh()
     }
     func applicationDidBecomeActive(_ notification: Notification) { model?.onActivate() }
-    func applicationWillTerminate(_ notification: Notification) { browser?.saveWindowSize() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         window?.makeKeyAndOrderFront(nil)
@@ -73,6 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "awtoday 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         menu.addItem(appItem)
+        let fileItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "파일")
+        fileMenu.addItem(withTitle: "닫기", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileItem.submenu = fileMenu
+        menu.addItem(fileItem)
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "편집")
         editMenu.addItem(withTitle: "실행 취소", action: Selector(("undo:")), keyEquivalent: "z")
