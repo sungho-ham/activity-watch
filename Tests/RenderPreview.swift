@@ -29,6 +29,22 @@ struct RenderPreview {
         }
         try render(MainView(model: model), "main-light", 560, 400)
         try render(MainView(model: model), "main-dark", 560, 400, dark: true)
+        model.selectBoundary(.start)
+        try render(MainView(model: model), "boundary-start-selected", 560, 400)
+        model.selectBoundary(.end)
+        try render(MainView(model: model), "boundary-end-selected", 560, 400)
+        model.select(nil)
+        let timelineRange = model.range
+        try model.saveAggregationRange(Span(start: timelineRange.start.addingTimeInterval(3600), end: timelineRange.end.addingTimeInterval(-7200)))
+        while model.loading { try await Task.sleep(nanoseconds: 50_000_000) }
+        try render(MainView(model: model), "aggregation-light", 560, 400)
+        try render(MainView(model: model), "aggregation-dark", 560, 400, dark: true)
+        try render(AggregationRangeEditor(model: model), "aggregation-editor", 430, 280)
+        try model.saveAggregationRange(Span(start: timelineRange.start.addingTimeInterval(3600), end: timelineRange.start.addingTimeInterval(5400)))
+        while model.loading { try await Task.sleep(nanoseconds: 50_000_000) }
+        try render(MainView(model: model), "aggregation-short", 560, 400)
+        try model.saveAggregationRange(nil)
+        while model.loading { try await Task.sleep(nanoseconds: 50_000_000) }
         try render(CalendarPicker(selection: .constant(DaySchedule.date(model.day)!)), "calendar", 300, 280)
         let range = model.range
         let exclusion = Adjustment(span: Span(start: range.start.addingTimeInterval(5 * 3600), end: range.start.addingTimeInterval(6 * 3600)), kind: .exclude)
@@ -40,7 +56,6 @@ struct RenderPreview {
         model.togglePanel(.adjustments)
         try render(MainView(model: model), "adjustments", 560, 639)
         try render(AdjustmentEditor(model: model, value: exclusion), "editor", 400, 300)
-        try render(DayRangeEditor(model: model), "day-editor", 430, 260)
         model.togglePanel(.trend)
         while model.trendLoading { try await Task.sleep(nanoseconds: 50_000_000) }
         try render(MainView(model: model), "trend", 560, 639)

@@ -18,8 +18,9 @@ final class AppModel: ObservableObject {
     @Published var panel: DetailPanel?
     @Published var detailHeight = PopupLayout.detailHeight
     @Published var selectedAdjustment: UUID?
+    @Published var selectedAggregationBoundary: AggregationBoundary?
     @Published var draft: Adjustment?
-    @Published var editingDay = false
+    @Published var editingAggregation = false
     @Published var editingWebPage = false
     @Published var trendDays = 7
     @Published private(set) var trend: [DaySummary] = []
@@ -42,8 +43,13 @@ final class AppModel: ObservableObject {
         self.api = api
         reloadStorage()
     }
-    var schedule: DaySchedule { DaySchedule(startOfDay: startOfDay, overrides: saved.dayOverrides) }
+    var schedule: DaySchedule { DaySchedule(startOfDay: startOfDay, overrides: [:]) }
     var range: Span { schedule.range(day) }
+    private var aggregationSchedule: DaySchedule { DaySchedule(startOfDay: "05:00", overrides: saved.dayOverrides, endOfDay: "00:00") }
+    var aggregationRange: Span { aggregationSchedule.range(day) }
+    private var activityRange: Span {
+        Span(start: min(range.start, aggregationRange.start), end: max(range.end, aggregationRange.end))
+    }
     var bucketID: String? {
         settings.automaticBucket ? buckets.first?.id : settings.manualBucketID
     }
@@ -68,7 +74,7 @@ final class AppModel: ObservableObject {
                 reloadStorage()
                 if storageReady { notice = "외부에서 변경된 저장 파일을 다시 읽었습니다." }
                 draft = nil
-                editingDay = false
+                editingAggregation = false
                 refresh()
             }
         } catch { self.error = error.localizedDescription }
@@ -77,6 +83,7 @@ final class AppModel: ObservableObject {
         day = DaySchedule.key(date)
         initializedDay = true
         selectedAdjustment = nil
+        selectedAggregationBoundary = nil
         draft = nil
         refresh()
     }
@@ -90,6 +97,7 @@ final class AppModel: ObservableObject {
             try store.saveSettings(value)
             settings = value
             selectedAdjustment = nil
+            selectedAggregationBoundary = nil
             draft = nil
             refresh()
         } catch { self.error = error.localizedDescription }
@@ -135,10 +143,10 @@ final class AppModel: ObservableObject {
                 }
                 guard let bucket = self.bucketID else { throw AppError("AFK 버킷이 없습니다. ActivityWatch의 AFK watcher를 확인하세요.") }
                 let key = self.day
-                let range = self.schedule.range(key)
-                try self.schedule.validate(range, key: key)
+                let range = self.aggregationRange
+                try self.aggregationSchedule.validate(range, key: key)
                 let now = Date()
-                let elapsed = Span(start: range.start, end: min(range.end, now))
+                let elapsed = Span(start: self.activityRange.start, end: min(self.activityRange.end, now))
                 let activity = elapsed.isValid ? try await self.api.activity(bucket: bucket, periods: [elapsed])[0] : []
                 try Task.checkCancellation()
                 guard self.requestID == id, self.day == key, self.bucketID == bucket else { return }
@@ -170,19 +178,33 @@ final class AppModel: ObservableObject {
         editingWebPage = false
         browserAction?()
     }
-    func select(_ entry: Adjustment) { selectedAdjustment = selectedAdjustment == entry.id ? nil : entry.id }
+    func select(_ entry: Adjustment?) {
+        selectedAggregationBoundary = nil
+        selectedAdjustment = selectedAdjustment == entry?.id ? nil : entry?.id
+    }
+    func selectBoundary(_ boundary: AggregationBoundary) {
+        selectedAdjustment = nil
+        selectedAggregationBoundary = boundary
+    }
     func beginDraft(_ span: Span, kind: AdjustmentKind = .exclude) {
-        guard editable, let elapsed = summary?.elapsed, let clipped = span.intersection(elapsed), clipped.seconds >= 1 else { return }
+        guard editable, let clipped = span.intersection(range), clipped.seconds >= 1 else { return }
+        selectedAdjustment = nil
+        selectedAggregationBoundary = nil
         draft = Adjustment(span: clipped, kind: kind)
     }
     func newDraft() {
-        guard let elapsed = summary?.elapsed else { return }
-        let end = Date(timeIntervalSince1970: floor(elapsed.end.timeIntervalSince1970 / 60) * 60)
-        beginDraft(Span(start: max(elapsed.start, end.addingTimeInterval(-1800)), end: end))
+        guard editable, let summary else { return }
+        let elapsed = Span(start: range.start, end: min(range.end, summary.capturedAt))
+        if elapsed.isValid {
+            let end = Date(timeIntervalSince1970: floor(elapsed.end.timeIntervalSince1970 / 60) * 60)
+            beginDraft(Span(start: max(elapsed.start, end.addingTimeInterval(-1800)), end: end))
+        } else {
+            beginDraft(Span(start: range.start, end: min(range.end, range.start.addingTimeInterval(1800))))
+        }
     }
     func saveAdjustment(_ value: Adjustment) throws {
-        guard editable, let bucket = bucketID, let elapsed = summary?.elapsed else { throw AppError("기록을 먼저 새로고침하세요.") }
-        guard value.span.intersection(elapsed) == value.span else { throw AppError("선택한 하루의 이미 지난 시간만 지정할 수 있습니다.") }
+        guard editable, let bucket = bucketID else { throw AppError("기록을 먼저 새로고침하세요.") }
+        guard value.span.intersection(activityRange) == value.span else { throw AppError("선택한 하루 범위 안의 시간만 지정할 수 있습니다.") }
         try validateAdjustment(value, among: entries)
         var next = saved
         var items = entries.filter { $0.id != value.id }
@@ -191,6 +213,7 @@ final class AppModel: ObservableObject {
         try store.saveState(next)
         saved = next
         selectedAdjustment = value.id
+        selectedAggregationBoundary = nil
         draft = nil
         recalculate()
     }
@@ -207,18 +230,18 @@ final class AppModel: ObservableObject {
     }
     private func recalculate() {
         if let current = summary {
-            summary = DaySummary(key: day, range: current.range, activity: current.base, entries: entries, now: current.capturedAt)
+            summary = DaySummary(key: day, range: aggregationRange, activity: current.activity, entries: entries, now: current.capturedAt)
         }
         if panel == .trend { loadTrend() }
     }
-    func saveDayRange(_ span: Span?) throws {
-        let nextSpan = span ?? schedule.defaultRange(day)
-        try schedule.validate(nextSpan, key: day)
+    func saveAggregationRange(_ span: Span?) throws {
+        let nextSpan = span ?? aggregationSchedule.defaultRange(day)
+        try aggregationSchedule.validate(nextSpan, key: day)
         var next = saved
         next.dayOverrides[day] = span
         try store.saveState(next)
         saved = next
-        editingDay = false
+        editingAggregation = false
         selectedAdjustment = nil
         refresh()
     }
@@ -229,7 +252,7 @@ final class AppModel: ObservableObject {
         trendError = nil
         guard panel == .trend, let bucket = bucketID, summary != nil else { return }
         let ending = day
-        let schedule = self.schedule
+        let schedule = self.aggregationSchedule
         let state = saved
         let count = trendDays
         trendLoading = true
@@ -262,8 +285,9 @@ final class AppModel: ObservableObject {
     func escape() {
         if draft != nil { draft = nil }
         else if editingWebPage { editingWebPage = false }
-        else if editingDay { editingDay = false }
+        else if editingAggregation { editingAggregation = false }
         else if selectedAdjustment != nil { selectedAdjustment = nil }
+        else if selectedAggregationBoundary != nil { selectedAggregationBoundary = nil }
         else { closeAction?() }
     }
 }

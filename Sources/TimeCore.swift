@@ -47,6 +47,23 @@ enum AdjustmentKind: String, Codable, CaseIterable, Identifiable, Sendable {
     var symbol: String { self == .exclude ? "−" : "+" }
 }
 
+enum AggregationBoundary: CaseIterable, Equatable {
+    case start, end
+
+    func date(in span: Span) -> Date { self == .start ? span.start : span.end }
+
+    func moving(in span: Span, to date: Date, within bounds: Span) -> Span {
+        guard date != self.date(in: span) else { return span }
+        var result = span
+        if self == .start {
+            result.start = min(span.end.addingTimeInterval(-60), bounds.end.addingTimeInterval(-60), max(bounds.start, date))
+        } else {
+            result.end = max(span.start.addingTimeInterval(60), bounds.start.addingTimeInterval(60), min(bounds.end, date))
+        }
+        return result
+    }
+}
+
 struct Adjustment: Codable, Identifiable, Equatable, Sendable {
     var id: UUID = UUID()
     var span: Span
@@ -72,6 +89,7 @@ struct WebPagePreferences: Codable, Equatable {
 
 struct SavedState: Codable, Equatable {
     var version = 1
+    // Keep the stored key so existing date-specific limits become aggregation windows.
     var dayOverrides: [String: Span] = [:]
     var adjustments: [String: [String: [Adjustment]]] = [:]
     func entries(day: String, bucket: String) -> [Adjustment] {
@@ -108,6 +126,7 @@ struct DaySchedule {
     var startOfDay: String
     var overrides: [String: Span]
     var calendar: Calendar = .current
+    var endOfDay: String? = nil
 
     static func key(_ date: Date, calendar: Calendar = .current) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
@@ -128,11 +147,13 @@ struct DaySchedule {
     }
     func defaultRange(_ key: String) -> Span {
         let parts = startOfDay.split(separator: ":").compactMap { Int($0) }
+        let endParts = (endOfDay ?? startOfDay).split(separator: ":").compactMap { Int($0) }
         let date = Self.date(key, calendar: calendar)!
         let next = calendar.date(byAdding: .day, value: 1, to: date)!
         // Calendar arithmetic preserves the configured local time on DST transitions.
         let start = calendar.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: date)!
-        let end = calendar.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: next)!
+        let sameDayEnd = calendar.date(bySettingHour: endParts[0], minute: endParts[1], second: 0, of: date)!
+        let end = sameDayEnd > start ? sameDayEnd : calendar.date(bySettingHour: endParts[0], minute: endParts[1], second: 0, of: next)!
         return Span(start: start, end: end)
     }
     func range(_ key: String) -> Span { overrides[key] ?? defaultRange(key) }
@@ -165,6 +186,7 @@ struct DaySummary: Identifiable {
     let key: String
     let range: Span
     let elapsed: Span?
+    let activity: [Span]
     let base: [Span]
     let entries: [Adjustment]
     let capturedAt: Date
@@ -175,7 +197,9 @@ struct DaySummary: Identifiable {
         capturedAt = now
         let elapsed = Span(start: range.start, end: min(range.end, now))
         self.elapsed = elapsed.isValid ? elapsed : nil
-        self.base = elapsed.isValid ? Intervals.union(activity, within: elapsed) : []
+        let recorded = Intervals.union(activity.map { Span(start: $0.start, end: min($0.end, now)) })
+        self.activity = recorded
+        self.base = elapsed.isValid ? Intervals.union(recorded, within: elapsed) : []
         self.entries = entries
     }
     var baseSeconds: Double { Intervals.duration(base) }
@@ -188,9 +212,11 @@ struct DaySummary: Identifiable {
     var addedSeconds: Double { entries.filter { $0.kind == .add }.reduce(0) { $0 + effect($1) } }
     var adjustedSeconds: Double { max(0, baseSeconds - excludedSeconds + addedSeconds) }
     func explanation(_ entry: Adjustment) -> String? {
-        if entry.span.intersection(range) == nil { return "하루 범위 밖" }
+        if entry.span.intersection(range) == nil { return "합산 구간 밖" }
+        if entry.span.start >= capturedAt { return "시간이 지나면 반영" }
+        if entry.span.end > capturedAt { return "현재까지 지난 시간만 반영" }
         if effect(entry) == 0 { return entry.kind == .exclude ? "제외할 활동 없음" : "추가할 빈 시간 없음" }
-        if entry.span.intersection(range) != entry.span { return "하루 범위 안의 분량만 반영" }
+        if entry.span.intersection(range) != entry.span { return "합산 구간 안의 분량만 반영" }
         return nil
     }
 }

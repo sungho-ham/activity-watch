@@ -21,6 +21,7 @@ struct CoreTests {
         do {
             try intervalTests()
             try dayTests()
+            try boundaryTests()
             try persistenceTests()
             try decodingTests()
             try windowLayoutTests()
@@ -44,17 +45,29 @@ struct CoreTests {
         try expect(summary.adjustedSeconds == 50, "adjusted equation")
         let outside = Adjustment(span: span(110, 200), kind: .add)
         try expect(summary.effect(outside) == 0, "out of range entry kept with zero effect")
-        try expect(summary.explanation(outside) == "하루 범위 밖", "out of range explanation")
+        try expect(summary.explanation(outside) == "합산 구간 밖", "out of range explanation")
         let partial = DaySummary(key: "2026-10-28", range: span(0, 100), activity: activity, entries: [add], now: epoch.addingTimeInterval(90))
         try expect(partial.addedSeconds == 10, "future time is not counted")
+        try expect(partial.explanation(add) == "현재까지 지난 시간만 반영", "partly future adjustment explains elapsed-only total")
         let future = DaySummary(key: "2026-10-28", range: span(0, 100), activity: activity, entries: [add], now: epoch.addingTimeInterval(-1))
         try expect(future.adjustedSeconds == 0 && future.base.isEmpty, "entire future day")
+        try expect(future.explanation(add) == "시간이 지나면 반영", "future adjustment explains pending effect")
+        let pendingExclude = Adjustment(span: span(60, 100), kind: .exclude)
+        let pending = DaySummary(key: "2026-10-28", range: span(0, 100), activity: activity, entries: [pendingExclude], now: epoch.addingTimeInterval(50))
+        try expect(pending.excludedSeconds == 0 && pending.adjustedSeconds == 40, "future exclusion does not subtract early")
+        let progressed = DaySummary(key: "2026-10-28", range: span(0, 100), activity: activity, entries: [pendingExclude], now: epoch.addingTimeInterval(70))
+        try expect(progressed.excludedSeconds == 10 && progressed.adjustedSeconds == 40, "saved exclusion applies as its interval elapses")
         try validateAdjustment(add, among: [exclude])
         try validateAdjustment(exclude, among: [exclude])
         try rejects("same kind overlap") { try validateAdjustment(Adjustment(span: span(25, 35), kind: .exclude), among: [exclude]) }
         try rejects("different kind overlap") { try validateAdjustment(Adjustment(span: span(69, 100), kind: .add), among: [exclude]) }
         let shortened = DaySummary(key: "2026-10-28", range: span(40, 100), activity: activity, entries: [exclude, add], now: epoch.addingTimeInterval(1000))
         try expect(shortened.excludedSeconds == 10 && shortened.entries[0].span == exclude.span, "changing day clips effect and preserves original timestamps")
+        try expect(shortened.activity == Intervals.union(activity), "aggregation window preserves activity for the full timeline")
+        let filtered = DaySummary(key: "2026-10-28", range: span(25, 75), activity: activity, entries: [exclude, add], now: epoch.addingTimeInterval(1000))
+        try expect(filtered.baseSeconds == 30 && filtered.excludedSeconds == 25 && filtered.addedSeconds == 0 && filtered.adjustedSeconds == 5, "aggregation clips raw activity and both adjustment kinds at its boundaries")
+        let beforeEnd = DaySummary(key: "2026-10-28", range: span(25, 75), activity: activity, entries: [], now: epoch.addingTimeInterval(65))
+        try expect(beforeEnd.baseSeconds == 20 && beforeEnd.activity == [span(-10, 40), span(60, 65)], "current time still limits aggregation and full timeline activity")
         try expect(Display.duration(0) == "0분" && Display.duration(0.5) == "1분 미만", "subminute display")
         // Independent second-by-second oracle exercises unions and add/exclude algebra.
         var seed: UInt64 = 1031
@@ -85,6 +98,12 @@ struct CoreTests {
         let day = "2026-10-28"
         let range = schedule.range(day)
         try expect(range.start == date("2026-10-28T04:00:00+09:00") && range.end == date("2026-10-29T04:00:00+09:00"), "full 04-to-04 day")
+        let aggregation = DaySchedule(startOfDay: "05:00", overrides: [:], calendar: calendar, endOfDay: "00:00")
+        try expect(aggregation.range(day) == Span(start: date("2026-10-28T05:00:00+09:00"), end: date("2026-10-29T00:00:00+09:00")), "default aggregation is 05:00 on the selected date to midnight the following date")
+        try aggregation.validate(aggregation.range(day), key: day)
+        var customized = aggregation
+        customized.overrides[day] = range
+        try expect(customized.range(day) == range && customized.range("2026-10-29") == aggregation.range("2026-10-29"), "explicit saved limits are preserved while other dates use the new default")
         try expect(schedule.currentKey(now: date("2026-10-29T03:59:00+09:00")) == day, "before AW boundary selects yesterday")
         try expect(schedule.currentKey(now: range.end) == "2026-10-29", "half-open day boundary")
         try schedule.validate(range, key: day)
@@ -106,6 +125,17 @@ struct CoreTests {
         let dst = DaySchedule(startOfDay: "00:00", overrides: [:], calendar: calendar)
         try expect(dst.range("2026-03-08").seconds == 23 * 3600, "spring DST day")
         try expect(dst.range("2026-11-01").seconds == 25 * 3600, "fall DST day")
+    }
+    static func boundaryTests() throws {
+        let range = span(1000, 5000)
+        let bounds = span(0, 10000)
+        try expect(AggregationBoundary.start.moving(in: range, to: epoch.addingTimeInterval(3000), within: bounds) == span(3000, 5000), "dragging start preserves end")
+        try expect(AggregationBoundary.start.moving(in: range, to: epoch.addingTimeInterval(9000), within: bounds) == span(4940, 5000), "start cannot cross end")
+        try expect(AggregationBoundary.end.moving(in: range, to: epoch.addingTimeInterval(500), within: bounds) == span(1000, 1060), "end cannot cross start")
+        try expect(AggregationBoundary.start.moving(in: range, to: epoch.addingTimeInterval(-500), within: bounds) == span(0, 5000), "start is bounded by the timeline")
+        try expect(AggregationBoundary.end.moving(in: range, to: epoch.addingTimeInterval(20000), within: bounds) == span(1000, 10000), "end is bounded by the timeline")
+        let outside = span(-500, 5000)
+        try expect(AggregationBoundary.start.moving(in: outside, to: outside.start, within: bounds) == outside, "pressing a marker without movement preserves an existing range outside the timeline")
     }
     static func persistenceTests() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("awtoday-tests-\(UUID())")

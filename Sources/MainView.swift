@@ -17,10 +17,10 @@ struct MainView: View {
                 }
             }
         }.frame(width: PopupLayout.width).frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: .windowBackgroundColor).onTapGesture { model.select(nil) })
         .transaction { $0.animation = nil }
         .sheet(item: $model.draft) { AdjustmentEditor(model: model, value: $0) }
-        .sheet(isPresented: $model.editingDay) { DayRangeEditor(model: model) }
+        .sheet(isPresented: $model.editingAggregation) { AggregationRangeEditor(model: model) }
         .sheet(isPresented: $model.editingWebPage) { WebPageEditor(model: model) }
         .onExitCommand { model.escape() }
         .environment(\.locale, Locale(identifier: "ko_KR"))
@@ -48,13 +48,13 @@ struct MainView: View {
     }
     private var total: some View {
         VStack(spacing: 7) {
-            Button { model.editingDay = true } label: {
+            Button { model.editingAggregation = true } label: {
                 HStack(spacing: 4) {
-                    Text(Display.range(model.range, day: model.day))
-                    Text(model.saved.dayOverrides[model.day] == nil ? "· AW 기준" : "· 직접 설정")
+                    Text("합산 \(Display.range(model.aggregationRange, day: model.day))")
+                    Text(model.saved.dayOverrides[model.day] == nil ? "· 기본값" : "· 직접 설정")
                     Image(systemName: "chevron.down").font(.system(size: 8))
                 }.font(.caption).foregroundStyle(.secondary)
-            }.buttonStyle(.plain).help("하루 시작과 종료 시각 변경").disabled(!model.hasServerSettings)
+            }.buttonStyle(.plain).help("활동 합산 시작·종료 설정 · 타임라인 눈금은 유지됩니다").disabled(!model.hasServerSettings)
             Text(model.summary.map { Display.duration($0.adjustedSeconds) } ?? (model.loading ? "불러오는 중" : "—"))
                 .font(.system(size: model.summary == nil ? 28 : 36, weight: .semibold, design: .rounded)).monospacedDigit().frame(height: 44)
                 .help(model.summary.map { Display.exactDuration($0.adjustedSeconds) } ?? "")
@@ -86,7 +86,9 @@ struct MainView: View {
                 Text("━ + 추가").foregroundStyle(.green)
                 Text("━ − 제외").foregroundStyle(.orange)
                 Spacer()
-                Text("드래그하여 시간 지정").foregroundStyle(.secondary)
+                if let selected = model.entries.first(where: { $0.id == model.selectedAdjustment }) {
+                    Text(Display.range(selected.span, day: model.day)).foregroundStyle(.secondary).monospacedDigit()
+                }
             }.font(.system(size: 10))
         }
     }
@@ -107,7 +109,7 @@ struct MainView: View {
             }
             HStack(spacing: 12) {
                 Button { model.togglePanel(.trend) } label: { Label("추이", systemImage: model.panel == .trend ? "chevron.up" : "chart.bar") }
-                Button("시간 지정") { model.newDraft() }.disabled(!model.editable || model.summary?.elapsed == nil)
+                Button("시간 지정") { model.newDraft() }.disabled(!model.editable)
                 Spacer()
                 Button { model.browserAction?() } label: {
                     Text(model.settings.webPage?.title ?? "웹페이지").lineLimit(1).truncationMode(.tail).frame(maxWidth: 100)

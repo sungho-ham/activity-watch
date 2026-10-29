@@ -63,6 +63,64 @@ struct ModelChecks {
         try check(restored.entries.count == 1 && restored.entries[0].id == edit.id, "edit excludes itself from overlap checking")
         restored.deleteAdjustment(modified)
         try check(restored.entries.isEmpty, "delete adjustment")
+        let fullRange = restored.range
+        let defaultAggregation = restored.aggregationRange
+        let fullActivity = restored.summary!.activity
+        let defaultTotal = restored.summary!.adjustedSeconds
+        let startParts = Calendar.current.dateComponents([.hour, .minute], from: defaultAggregation.start)
+        let endParts = Calendar.current.dateComponents([.hour, .minute], from: defaultAggregation.end)
+        try check(startParts.hour == 5 && startParts.minute == 0 && endParts.hour == 0 && endParts.minute == 0
+                  && DaySchedule.key(defaultAggregation.end) == restored.schedule.adjacent(restored.day, 1), "new dates use 05:00 to the following midnight independently of the AW timeline")
+        let limited = Span(start: fullRange.start.addingTimeInterval(3600), end: fullRange.end.addingTimeInterval(-7200))
+        try restored.saveAggregationRange(limited)
+        try await wait(restored)
+        try check(restored.range == fullRange && restored.aggregationRange == limited && restored.summary?.range == limited, "aggregation limits do not change timeline scale")
+        try check(restored.summary?.baseSeconds == Intervals.overlap(fullActivity, with: limited), "main total uses only the aggregation window")
+        try check(restored.summary?.activity == fullActivity, "activity outside aggregation remains visible on the timeline")
+        let outsideAggregation = Adjustment(span: Span(start: fullRange.start, end: fullRange.start.addingTimeInterval(1800)), kind: .add)
+        try restored.saveAdjustment(outsideAggregation)
+        try check(restored.summary?.effect(outsideAggregation) == 0 && restored.summary?.activity == fullActivity, "saving outside the aggregation window preserves timeline activity and has no effect on total")
+        restored.togglePanel(.trend)
+        try await wait(restored)
+        try check(restored.trend.last?.range == limited && restored.trend.last?.adjustedSeconds == restored.summary?.adjustedSeconds, "trend uses the same saved aggregation limits as the main total")
+        restored.togglePanel(.trend)
+        let persisted = try FileStore(directory: root).load().1
+        try check(persisted.dayOverrides[restored.day] == limited, "aggregation range survives a storage round trip")
+        restored.deleteAdjustment(outsideAggregation)
+        try restored.saveAggregationRange(nil)
+        try await wait(restored)
+        try check(restored.range == fullRange && restored.aggregationRange == defaultAggregation && restored.summary?.adjustedSeconds == defaultTotal, "reset restores the 05:00-to-midnight total without changing timeline scale")
+        restored.selectBoundary(.start)
+        let dragged = AggregationBoundary.start.moving(in: defaultAggregation, to: defaultAggregation.start.addingTimeInterval(1800), within: fullRange)
+        try restored.saveAggregationRange(dragged)
+        try await wait(restored)
+        try check(restored.aggregationRange == dragged && restored.range == fullRange && restored.draft == nil
+                  && restored.selectedAggregationBoundary == .start, "saving a boundary drag preserves its highlight and does not create an adjustment draft")
+        restored.select(nil)
+        try check(restored.selectedAggregationBoundary == nil, "background selection clears the boundary highlight")
+        try restored.saveAggregationRange(nil)
+        try await wait(restored)
+        restored.chooseDay(DaySchedule.date(restored.schedule.adjacent(today, 2))!)
+        try await wait(restored)
+        try check(restored.editable && restored.summary?.elapsed == nil, "future day is editable without elapsed time")
+        restored.newDraft()
+        try check(restored.draft?.span.start == restored.range.start && restored.draft?.span.seconds == 1800, "time button creates a draft on a future day")
+        let futureAdd = Adjustment(span: Span(start: restored.range.start, end: restored.range.start.addingTimeInterval(1800)), kind: .add)
+        let futureExclude = Adjustment(span: Span(start: futureAdd.span.end, end: futureAdd.span.end.addingTimeInterval(1800)), kind: .exclude)
+        restored.beginDraft(futureExclude.span)
+        try check(restored.draft?.span == futureExclude.span, "future timeline draft is not clipped to elapsed time")
+        try restored.saveAdjustment(futureAdd)
+        try restored.saveAdjustment(futureExclude)
+        try check(restored.entries.count == 2 && restored.summary?.adjustedSeconds == 0, "future additions and exclusions save without affecting the total")
+        let futureState = try FileStore(directory: root).load().1
+        try check(futureState.entries(day: restored.day, bucket: latest) == [futureAdd, futureExclude], "future adjustments persist unchanged")
+        for span in [Span(start: restored.range.start.addingTimeInterval(-60), end: restored.range.start.addingTimeInterval(60)),
+                     Span(start: restored.range.end.addingTimeInterval(-60), end: restored.range.end.addingTimeInterval(60))] {
+            var rejected = false
+            do { try restored.saveAdjustment(Adjustment(span: span, kind: .add)) }
+            catch { rejected = true }
+            try check(rejected && restored.entries.count == 2, "adjustment outside the selected day is rejected without mutation")
+        }
         let current = try FileStore(directory: root).load()
         var missing = current.0
         missing.automaticBucket = false
